@@ -1,4 +1,4 @@
-name: Build APK
+name: Universal APK Builder & Release
 
 on:
   push:
@@ -23,9 +23,6 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      # Mencari project Android otomatis:
-      # 1) kalau file project sudah ada langsung di repo -> dipakai
-      # 2) kalau berupa .zip (termasuk zip di dalam zip) -> diekstrak otomatis
       - name: Siapkan project
         shell: bash
         run: |
@@ -45,7 +42,6 @@ jobs:
           fi
 
           if [ -z "$ROOT" ]; then
-            # ekstrak semua zip di repo (maks 2 tingkat folder)
             i=0
             while IFS= read -r z; do
               i=$((i+1))
@@ -53,7 +49,6 @@ jobs:
               unzip -o -q "$z" -d "$SRC/z$i" || true
             done < <(find "$GITHUB_WORKSPACE" -maxdepth 2 -iname '*.zip' -not -path '*/.git/*' -not -path '*/_src/*')
 
-            # zip di dalam zip (maks 3 putaran)
             for round in 1 2 3; do
               ROOT=$(find "$SRC" -maxdepth 6 \( -name settings.gradle.kts -o -name settings.gradle \) -not -path '*/__MACOSX/*' -printf '%d %h\n' | sort -n | head -n1 | cut -d' ' -f2-)
               [ -n "$ROOT" ] && break
@@ -69,40 +64,45 @@ jobs:
           fi
 
           if [ -z "$ROOT" ]; then
-            echo "::error::settings.gradle(.kts) tidak ditemukan. Isi repo/zip:"
-            find "$GITHUB_WORKSPACE" -maxdepth 4 -not -path '*/.git/*' | head -80
+            echo "::error::settings.gradle(.kts) tidak ditemukan."
             exit 1
           fi
 
           echo "Project root: $ROOT"
           echo "PROJECT_DIR=$ROOT" >> "$GITHUB_ENV"
 
-      # Memakai Gradle 8.7 dari setup-gradle, jadi tidak butuh gradle-wrapper.jar
       - name: Build debug APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Cari APK dan tentukan tag
+      - name: Cari APK dan tentukan nama dinamis
         id: ver
         shell: bash
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           APK=$(find . -path '*/build/outputs/apk/debug/*.apk' | head -n1)
           [ -n "$APK" ] || { echo "::error::APK tidak ditemukan"; exit 1; }
+          
           VN=$(grep -rhoE 'versionName *= *"[^"]+"' --include=build.gradle.kts --include=build.gradle . | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
           VN=${VN:-0}
-          cp "$APK" "$GITHUB_WORKSPACE/AlfyTunnel-v${VN}-${{ github.run_number }}.apk"
-          echo "apk=AlfyTunnel-v${VN}-${{ github.run_number }}.apk" >> "$GITHUB_OUTPUT"
+          
+          # MENDETEKSI NAMA PROYEK OTOMATIS
+          APP_NAME=$(grep -m 1 'rootProject.name' settings.gradle.kts settings.gradle 2>/dev/null | sed -E 's/.*= *["'\''](.*)["'\'']/\1/' | tr -d '[:space:]')
+          APP_NAME=${APP_NAME:-UniversalApp}
+          
+          cp "$APK" "$GITHUB_WORKSPACE/${APP_NAME}-v${VN}-${{ github.run_number }}.apk"
+          echo "apk=${APP_NAME}-v${VN}-${{ github.run_number }}.apk" >> "$GITHUB_OUTPUT"
           echo "tag=v${VN}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AlfyTunnel-apk
+          name: ${{ steps.ver.outputs.app_name }}-apk
           path: ${{ steps.ver.outputs.apk }}
 
       - name: Buat GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          name: AlfyTunnel ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.app_name }} ${{ steps.ver.outputs.tag }}
           files: ${{ steps.ver.outputs.apk }}
